@@ -707,34 +707,50 @@ find_mapping(Variable, Mappings) ->
 -spec run_validations(cuttlefish_schema:schema(), cuttlefish_conf:conf())
     -> boolean()|list(cuttlefish_error:error()).
 run_validations({_, Mappings, Validators}, Conf) ->
-    Validations = lists:flatten([ begin
+    Validations = lists:flatten([begin
         Vs = cuttlefish_mapping:validators(M, Validators),
-        Value = proplists:get_value(cuttlefish_mapping:variable(M), Conf),
-        [ begin
-            Validator = cuttlefish_validator:func(V),
-            case {Value, Validator(Value)} of
-                {undefined, _} -> true;
-                {_, true} ->
-                    true;
-                _ ->
-                    Error = {validation, { cuttlefish_variable:format(
-                                             cuttlefish_mapping:variable(M)),
-                                           cuttlefish_validator:description(V)
-                                         }},
-                    ?logger:error(cuttlefish_error:xlate(Error)),
-                    {error, Error}
-            end
-        end || V <- Vs]
-
+        Variable = cuttlefish_mapping:variable(M),
+        case cuttlefish_mapping:is_fuzzy_variable(M) of
+            false ->
+                Value = proplists:get_value(Variable, Conf),
+                do_run_validations(M, Value, Vs);
+            true ->
+                [begin
+                    Value = proplists:get_value(replace_fuzzyvar(Variable, FuzzyVar, Key), Conf),
+                    do_run_validations(M, Value, Vs)
+                 end || {FuzzyVar, Key} <- cuttlefish_variable:fuzzy_matches(Variable, Conf)]
+        end
      end || M <- Mappings,
             cuttlefish_mapping:validators(M) =/= [],
             cuttlefish_mapping:default(M) =/= undefined orelse proplists:is_defined(cuttlefish_mapping:variable(M), Conf)
-            ]),
+    ]),
     case lists:all(fun(X) -> X =:= true end, Validations) of
         true -> true;
         _ -> Validations
     end.
 
+do_run_validations(Map, Value, Validators) ->
+    [begin
+        Validator = cuttlefish_validator:func(V),
+        case {Value, Validator(Value)} of
+            {undefined, _} -> true;
+            {_, true} ->
+                true;
+            _ ->
+                Error = {validation, { cuttlefish_variable:format(
+                                            cuttlefish_mapping:variable(Map)),
+                                        cuttlefish_validator:description(V)
+                                        }},
+                ?logger:error(cuttlefish_error:xlate(Error)),
+                {error, Error}
+        end
+     end || V <- Validators].
+
+replace_fuzzyvar(Variable, FuzzyVar, Key) ->
+    [case Tok of
+        FuzzyVar -> Key;
+        Tok -> Tok
+     end || Tok <- Variable].
 
 %% @doc Calls Fun on each element of the list until it returns {ok,
 %% term()}, otherwise accumulates {error, term()} into a list,
